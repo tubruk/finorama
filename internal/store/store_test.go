@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/chickenzord/finorama/internal/crypto"
 	"github.com/chickenzord/finorama/internal/model"
@@ -66,8 +67,9 @@ func TestStoreFlow(t *testing.T) {
 		t.Fatalf("account password decrypt failed")
 	}
 
-	// 4. Save holdings & snapshot
-	holdings := []model.Holding{
+	// 4. Save holdings across multiple days with second precision
+	t1 := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
+	holdings1 := []model.Holding{
 		{
 			AssetType:    "EQUITY",
 			SecurityCode: "BBCA",
@@ -88,12 +90,39 @@ func TestStoreFlow(t *testing.T) {
 		},
 	}
 
-	err = st.SaveAccountHoldings(acc.ID, holdings, 15000000, "2026-11-25")
+	err = st.SaveAccountHoldings(acc.ID, holdings1, t1)
 	if err != nil {
-		t.Fatalf("save holdings error: %v", err)
+		t.Fatalf("save holdings day 1 error: %v", err)
 	}
 
-	// 5. Get portfolio overview
+	t2 := time.Date(2026, 11, 25, 14, 30, 45, 0, time.UTC)
+	holdings2 := []model.Holding{
+		{
+			AssetType:    "EQUITY",
+			SecurityCode: "BBCA",
+			SecurityName: "Bank Central Asia",
+			Participant:  "Mandiri Sekuritas",
+			Quantity:     1000,
+			Price:        11000,
+			TotalValue:   11000000,
+		},
+		{
+			AssetType:    "CASH",
+			SecurityCode: "RDN-BCA",
+			SecurityName: "Cash RDN (BCA)",
+			Participant:  "BCA",
+			Quantity:     4000000,
+			Price:        1,
+			TotalValue:   4000000,
+		},
+	}
+
+	err = st.SaveAccountHoldings(acc.ID, holdings2, t2)
+	if err != nil {
+		t.Fatalf("save holdings day 2 error: %v", err)
+	}
+
+	// 5. Get portfolio overview (should aggregate from latest day 2026-11-25)
 	overview, err := st.GetPortfolioOverview()
 	if err != nil {
 		t.Fatalf("overview error: %v", err)
@@ -102,13 +131,13 @@ func TestStoreFlow(t *testing.T) {
 	if overview.TotalValue != 15000000 {
 		t.Errorf("expected total value 15000000, got %f", overview.TotalValue)
 	}
-	if overview.TotalEquity != 10000000 {
-		t.Errorf("expected equity 10000000, got %f", overview.TotalEquity)
+	if overview.TotalEquity != 11000000 {
+		t.Errorf("expected equity 11000000, got %f", overview.TotalEquity)
 	}
-	if overview.TotalCash != 5000000 {
-		t.Errorf("expected cash 5000000, got %f", overview.TotalCash)
+	if overview.TotalCash != 4000000 {
+		t.Errorf("expected cash 4000000, got %f", overview.TotalCash)
 	}
-	if len(overview.Historical) != 1 || overview.Historical[0].TotalValue != 15000000 {
-		t.Errorf("expected 1 historical aggregate snapshot")
+	if len(overview.Historical) != 2 {
+		t.Errorf("expected 2 historical aggregate snapshots, got %d", len(overview.Historical))
 	}
 }

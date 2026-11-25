@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -24,27 +22,46 @@ const (
 )
 
 type Syncer struct {
-	store      *store.Store
-	vault      *vault.Vault
-	authDir    string
-	cron       *cron.Cron
+	store        *store.Store
+	vault        *vault.Vault
+	authStores   map[int64]*MemoryAuthStore
+	authMu       sync.Mutex
+	cron         *cron.Cron
 	accountDelay time.Duration
-	mu         sync.Mutex
-	isSyncing  bool
+	mu           sync.Mutex
+	isSyncing    bool
 }
 
-func New(st *store.Store, v *vault.Vault, dataDir string) *Syncer {
-	authDir := filepath.Join(dataDir, "ksei_sessions")
-	_ = os.MkdirAll(authDir, 0700)
-
+func New(st *store.Store, v *vault.Vault, _ string) *Syncer {
 	s := &Syncer{
 		store:        st,
 		vault:        v,
-		authDir:      authDir,
+		authStores:   make(map[int64]*MemoryAuthStore),
 		cron:         cron.New(),
 		accountDelay: DefaultAccountSyncDelay,
 	}
 	return s
+}
+
+// ClearSessionCache wipes all in-memory KSEI session tokens.
+func (s *Syncer) ClearSessionCache() {
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+	for _, store := range s.authStores {
+		_ = store.Close()
+	}
+	s.authStores = make(map[int64]*MemoryAuthStore)
+}
+
+func (s *Syncer) getAuthStore(accountID int64) *MemoryAuthStore {
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+	st, exists := s.authStores[accountID]
+	if !exists {
+		st = NewMemoryAuthStore()
+		s.authStores[accountID] = st
+	}
+	return st
 }
 
 // SetAccountDelay allows customizing delay between consecutive account syncs.
@@ -111,7 +128,7 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 		return fmt.Errorf("list accounts: %w", err)
 	}
 
-	captureDate := time.Now().Format("2006-01-02")
+	capturedAt := time.Now()
 	var syncErrors []string
 	syncedCount := 0
 
@@ -135,7 +152,7 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 		}
 
 		syncedCount++
-		if err := s.syncAccount(ctx, key, acc, captureDate); err != nil {
+		if err := s.syncAccount(ctx, key, acc, capturedAt); err != nil {
 			log.Printf("[Syncer] Failed to sync account %s (%s): %v", acc.Name, acc.Username, err)
 			_ = s.store.UpdateAccountSyncStatus(acc.ID, err)
 			syncErrors = append(syncErrors, fmt.Sprintf("%s: %v", acc.Name, err))
@@ -175,8 +192,8 @@ func (s *Syncer) SyncAccountByID(ctx context.Context, accountID int64) error {
 		return err
 	}
 
-	captureDate := time.Now().Format("2006-01-02")
-	if err := s.syncAccount(ctx, key, *acc, captureDate); err != nil {
+	capturedAt := time.Now()
+	if err := s.syncAccount(ctx, key, *acc, capturedAt); err != nil {
 		_ = s.store.UpdateAccountSyncStatus(acc.ID, err)
 		return err
 	}
@@ -184,21 +201,14 @@ func (s *Syncer) SyncAccountByID(ctx context.Context, accountID int64) error {
 	return nil
 }
 
-func (s *Syncer) syncAccount(ctx context.Context, key []byte, acc model.Account, captureDate string) error {
+func (s *Syncer) syncAccount(ctx context.Context, key []byte, acc model.Account, capturedAt time.Time) error {
 	plainPassBytes, err := crypto.Decrypt(key, acc.EncryptedPassword)
 	if err != nil {
 		return fmt.Errorf("decrypt account password: %w", err)
 	}
 	password := string(plainPassBytes)
 
-	// User specific session store
-	accSessionDir := filepath.Join(s.authDir, fmt.Sprintf("acc_%d", acc.ID))
-	_ = os.MkdirAll(accSessionDir, 0700)
-
-	authStore, err := goksei.NewFileAuthStore(accSessionDir)
-	if err != nil {
-		return fmt.Errorf("init auth store: %w", err)
-	}
+	authStore := s.getAuthStore(acc.ID)
 
 	client := goksei.NewClient(goksei.ClientOpts{
 		Username:      acc.Username,
@@ -209,7 +219,7 @@ func (s *Syncer) syncAccount(ctx context.Context, key []byte, acc model.Account,
 	})
 
 	var holdings []model.Holding
-	var totalPortfolioValue float64
+	capturedDate := capturedAt.Format("2006-01-02")
 
 	// 1. Fetch Equities
 	eqBalances, err := client.GetShareBalances(goksei.EquityType)
@@ -218,9 +228,10 @@ func (s *Syncer) syncAccount(ctx context.Context, key []byte, acc model.Account,
 	}
 	for _, item := range eqBalances.Data {
 		val := item.CurrentValue()
-		totalPortfolioValue += val
 		holdings = append(holdings, model.Holding{
 			AccountID:    acc.ID,
+			CapturedAt:   capturedAt,
+			CapturedDate: capturedDate,
 			AssetType:    "EQUITY",
 			SecurityCode: item.Symbol(),
 			SecurityName: item.FullName,
@@ -239,9 +250,10 @@ func (s *Syncer) syncAccount(ctx context.Context, key []byte, acc model.Account,
 	} else {
 		for _, item := range mfBalances.Data {
 			val := item.CurrentValue()
-			totalPortfolioValue += val
 			holdings = append(holdings, model.Holding{
 				AccountID:    acc.ID,
+				CapturedAt:   capturedAt,
+				CapturedDate: capturedDate,
 				AssetType:    "MUTUAL_FUND",
 				SecurityCode: item.Symbol(),
 				SecurityName: item.FullName,
@@ -261,9 +273,10 @@ func (s *Syncer) syncAccount(ctx context.Context, key []byte, acc model.Account,
 	} else {
 		for _, item := range bondBalances.Data {
 			val := item.CurrentValue()
-			totalPortfolioValue += val
 			holdings = append(holdings, model.Holding{
 				AccountID:    acc.ID,
+				CapturedAt:   capturedAt,
+				CapturedDate: capturedDate,
 				AssetType:    "BOND",
 				SecurityCode: item.Symbol(),
 				SecurityName: item.FullName,
@@ -283,13 +296,14 @@ func (s *Syncer) syncAccount(ctx context.Context, key []byte, acc model.Account,
 	} else {
 		for _, item := range cashResp.Data {
 			val := item.CurrentBalance()
-			totalPortfolioValue += val
 			bankName, ok := goksei.CustodianBankNameByID(item.BankID)
 			if !ok {
 				bankName = item.BankID
 			}
 			holdings = append(holdings, model.Holding{
 				AccountID:    acc.ID,
+				CapturedAt:   capturedAt,
+				CapturedDate: capturedDate,
 				AssetType:    "CASH",
 				SecurityCode: fmt.Sprintf("RDN-%s-%s", item.BankID, item.AccountNumber),
 				SecurityName: fmt.Sprintf("Cash RDN (%s)", bankName),
@@ -302,8 +316,8 @@ func (s *Syncer) syncAccount(ctx context.Context, key []byte, acc model.Account,
 		}
 	}
 
-	// Persist holdings and snapshot
-	if err := s.store.SaveAccountHoldings(acc.ID, holdings, totalPortfolioValue, captureDate); err != nil {
+	// Persist holdings
+	if err := s.store.SaveAccountHoldings(acc.ID, holdings, capturedAt); err != nil {
 		return fmt.Errorf("persist holdings: %w", err)
 	}
 

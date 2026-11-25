@@ -67,9 +67,11 @@ func (s *Store) migrate() error {
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
 
-	CREATE TABLE IF NOT EXISTS latest_holdings (
+	CREATE TABLE IF NOT EXISTS holdings (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+		captured_at DATETIME NOT NULL,
+		captured_date TEXT NOT NULL,
 		asset_type TEXT NOT NULL,
 		security_code TEXT NOT NULL,
 		security_name TEXT NOT NULL,
@@ -78,22 +80,13 @@ func (s *Store) migrate() error {
 		quantity REAL NOT NULL DEFAULT 0,
 		price REAL NOT NULL DEFAULT 0,
 		total_value REAL NOT NULL DEFAULT 0,
-		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		UNIQUE(account_id, asset_type, security_code, participant)
-	);
-
-	CREATE TABLE IF NOT EXISTS daily_snapshots (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		date TEXT NOT NULL,
-		account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-		total_value REAL NOT NULL DEFAULT 0,
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		UNIQUE(date, account_id)
+		UNIQUE(captured_date, account_id, asset_type, security_code, participant)
 	);
 
-	CREATE INDEX IF NOT EXISTS idx_holdings_account ON latest_holdings(account_id);
-	CREATE INDEX IF NOT EXISTS idx_holdings_asset ON latest_holdings(asset_type);
-	CREATE INDEX IF NOT EXISTS idx_snapshots_date ON daily_snapshots(date);
+	CREATE INDEX IF NOT EXISTS idx_holdings_acc_captured ON holdings(account_id, captured_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_holdings_date ON holdings(captured_date);
+	CREATE INDEX IF NOT EXISTS idx_holdings_asset ON holdings(asset_type);
 	`
 	_, err := s.db.Exec(query)
 	return err
@@ -274,8 +267,8 @@ func (s *Store) UpdateAccountSyncStatus(accountID int64, syncErr error) error {
 	return err
 }
 
-// SaveAccountHoldings replaces all current holdings for an account and records daily snapshot.
-func (s *Store) SaveAccountHoldings(accountID int64, holdings []model.Holding, totalValue float64, captureDate string) error {
+// SaveAccountHoldings records or updates holdings for an account on capturedAt date.
+func (s *Store) SaveAccountHoldings(accountID int64, holdings []model.Holding, capturedAt time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -285,38 +278,36 @@ func (s *Store) SaveAccountHoldings(accountID int64, holdings []model.Holding, t
 	}
 	defer tx.Rollback()
 
-	// Delete existing latest holdings for this account
-	if _, err := tx.Exec("DELETE FROM latest_holdings WHERE account_id = ?", accountID); err != nil {
-		return fmt.Errorf("delete old holdings: %w", err)
-	}
+	capturedDate := capturedAt.Format("2006-01-02")
 
 	stmt, err := tx.Prepare(`
-		INSERT INTO latest_holdings (account_id, asset_type, security_code, security_name, participant, currency, quantity, price, total_value, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO holdings (
+			account_id, captured_at, captured_date, asset_type, security_code,
+			security_name, participant, currency, quantity, price, total_value
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(captured_date, account_id, asset_type, security_code, participant) DO UPDATE SET
+			captured_at = excluded.captured_at,
+			quantity = excluded.quantity,
+			price = excluded.price,
+			total_value = excluded.total_value,
+			security_name = excluded.security_name
 	`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
-	now := time.Now()
 	for _, h := range holdings {
-		if _, err := stmt.Exec(accountID, h.AssetType, h.SecurityCode, h.SecurityName, h.Participant, h.Currency, h.Quantity, h.Price, h.TotalValue, now); err != nil {
+		if _, err := stmt.Exec(
+			accountID, capturedAt, capturedDate, h.AssetType, h.SecurityCode,
+			h.SecurityName, h.Participant, h.Currency, h.Quantity, h.Price, h.TotalValue,
+		); err != nil {
 			return fmt.Errorf("insert holding (%s): %w", h.SecurityCode, err)
 		}
 	}
 
-	// Update or insert daily snapshot
-	_, err = tx.Exec(`
-		INSERT INTO daily_snapshots (date, account_id, total_value, created_at)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(date, account_id) DO UPDATE SET total_value = excluded.total_value, created_at = excluded.created_at
-	`, captureDate, accountID, totalValue, now)
-	if err != nil {
-		return fmt.Errorf("save daily snapshot: %w", err)
-	}
-
 	// Update account last sync
+	now := time.Now()
 	_, err = tx.Exec(`
 		UPDATE accounts
 		SET last_synced_at = ?, last_sync_error = '', updated_at = ?
@@ -329,16 +320,19 @@ func (s *Store) SaveAccountHoldings(accountID int64, holdings []model.Holding, t
 	return tx.Commit()
 }
 
-// GetHoldingsByAccountID returns latest holdings for a specific account.
+// GetHoldingsByAccountID returns the latest holdings for a specific account.
 func (s *Store) GetHoldingsByAccountID(accountID int64) ([]model.Holding, error) {
 	rows, err := s.db.Query(`
-		SELECT h.id, h.account_id, a.name, h.asset_type, h.security_code, h.security_name,
-		       h.participant, h.currency, h.quantity, h.price, h.total_value, h.updated_at
-		FROM latest_holdings h
+		SELECT h.id, h.account_id, a.name, h.captured_at, h.captured_date, h.asset_type, h.security_code, h.security_name,
+		       h.participant, h.currency, h.quantity, h.price, h.total_value
+		FROM holdings h
 		JOIN accounts a ON h.account_id = a.id
 		WHERE h.account_id = ?
+		  AND h.captured_date = (
+			SELECT MAX(h2.captured_date) FROM holdings h2 WHERE h2.account_id = ?
+		  )
 		ORDER BY h.total_value DESC
-	`, accountID)
+	`, accountID, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("query holdings by account: %w", err)
 	}
@@ -347,7 +341,7 @@ func (s *Store) GetHoldingsByAccountID(accountID int64) ([]model.Holding, error)
 	var holdings []model.Holding
 	for rows.Next() {
 		var h model.Holding
-		if err := rows.Scan(&h.ID, &h.AccountID, &h.AccountName, &h.AssetType, &h.SecurityCode, &h.SecurityName, &h.Participant, &h.Currency, &h.Quantity, &h.Price, &h.TotalValue, &h.UpdatedAt); err != nil {
+		if err := rows.Scan(&h.ID, &h.AccountID, &h.AccountName, &h.CapturedAt, &h.CapturedDate, &h.AssetType, &h.SecurityCode, &h.SecurityName, &h.Participant, &h.Currency, &h.Quantity, &h.Price, &h.TotalValue); err != nil {
 			return nil, err
 		}
 		holdings = append(holdings, h)
@@ -363,24 +357,35 @@ func (s *Store) GetPortfolioOverview() (*model.PortfolioOverview, error) {
 		Historical: make([]model.DailyAggregate, 0),
 	}
 
-	// Per-account totals
-	rows, err := s.db.Query(`
-		SELECT a.id, a.name, a.username, a.last_synced_at, COALESCE(SUM(h.total_value), 0) as total_val
+	// Latest holdings per account
+	latestHoldingsSubquery := `
+		SELECT h.*
+		FROM holdings h
+		INNER JOIN (
+			SELECT account_id, MAX(captured_date) as max_date
+			FROM holdings
+			GROUP BY account_id
+		) latest ON h.account_id = latest.account_id AND h.captured_date = latest.max_date
+	`
+
+	// Per-account totals from their latest capture
+	accRows, err := s.db.Query(fmt.Sprintf(`
+		SELECT a.id, a.name, a.username, a.last_synced_at, COALESCE(SUM(lh.total_value), 0) as total_val
 		FROM accounts a
-		LEFT JOIN latest_holdings h ON a.id = h.account_id
+		LEFT JOIN (%s) lh ON a.id = lh.account_id
 		WHERE a.is_active = 1
 		GROUP BY a.id
 		ORDER BY a.name ASC
-	`)
+	`, latestHoldingsSubquery))
 	if err != nil {
 		return nil, fmt.Errorf("query account summaries: %w", err)
 	}
-	defer rows.Close()
+	defer accRows.Close()
 
-	for rows.Next() {
+	for accRows.Next() {
 		var sm model.AccountSummary
 		var lastSync sql.NullTime
-		if err := rows.Scan(&sm.AccountID, &sm.AccountName, &sm.Username, &lastSync, &sm.TotalValue); err != nil {
+		if err := accRows.Scan(&sm.AccountID, &sm.AccountName, &sm.Username, &lastSync, &sm.TotalValue); err != nil {
 			return nil, err
 		}
 		if lastSync.Valid {
@@ -390,12 +395,12 @@ func (s *Store) GetPortfolioOverview() (*model.PortfolioOverview, error) {
 		overview.TotalValue += sm.TotalValue
 	}
 
-	// Asset breakdown totals
-	assetRows, err := s.db.Query(`
+	// Asset breakdown totals from latest holdings
+	assetRows, err := s.db.Query(fmt.Sprintf(`
 		SELECT asset_type, COALESCE(SUM(total_value), 0)
-		FROM latest_holdings
+		FROM (%s)
 		GROUP BY asset_type
-	`)
+	`, latestHoldingsSubquery))
 	if err != nil {
 		return nil, fmt.Errorf("query asset breakdown: %w", err)
 	}
@@ -421,14 +426,14 @@ func (s *Store) GetPortfolioOverview() (*model.PortfolioOverview, error) {
 		}
 	}
 
-	// Holdings list with account name
-	holdRows, err := s.db.Query(`
-		SELECT h.id, h.account_id, a.name, h.asset_type, h.security_code, h.security_name,
-		       h.participant, h.currency, h.quantity, h.price, h.total_value, h.updated_at
-		FROM latest_holdings h
-		JOIN accounts a ON h.account_id = a.id
-		ORDER BY h.total_value DESC
-	`)
+	// Current latest holdings list across accounts
+	holdRows, err := s.db.Query(fmt.Sprintf(`
+		SELECT lh.id, lh.account_id, a.name, lh.captured_at, lh.captured_date, lh.asset_type,
+		       lh.security_code, lh.security_name, lh.participant, lh.currency, lh.quantity, lh.price, lh.total_value
+		FROM (%s) lh
+		JOIN accounts a ON lh.account_id = a.id
+		ORDER BY lh.total_value DESC
+	`, latestHoldingsSubquery))
 	if err != nil {
 		return nil, fmt.Errorf("query holdings: %w", err)
 	}
@@ -436,18 +441,18 @@ func (s *Store) GetPortfolioOverview() (*model.PortfolioOverview, error) {
 
 	for holdRows.Next() {
 		var h model.Holding
-		if err := holdRows.Scan(&h.ID, &h.AccountID, &h.AccountName, &h.AssetType, &h.SecurityCode, &h.SecurityName, &h.Participant, &h.Currency, &h.Quantity, &h.Price, &h.TotalValue, &h.UpdatedAt); err != nil {
+		if err := holdRows.Scan(&h.ID, &h.AccountID, &h.AccountName, &h.CapturedAt, &h.CapturedDate, &h.AssetType, &h.SecurityCode, &h.SecurityName, &h.Participant, &h.Currency, &h.Quantity, &h.Price, &h.TotalValue); err != nil {
 			return nil, err
 		}
 		overview.Holdings = append(overview.Holdings, h)
 	}
 
-	// Historical aggregated timeseries (sum of account snapshots per date)
+	// Historical aggregated timeseries (sum of holdings value per captured_date on the fly)
 	histRows, err := s.db.Query(`
-		SELECT date, SUM(total_value) as total_val
-		FROM daily_snapshots
-		GROUP BY date
-		ORDER BY date ASC
+		SELECT captured_date, SUM(total_value) as total_val
+		FROM holdings
+		GROUP BY captured_date
+		ORDER BY captured_date ASC
 		LIMIT 90
 	`)
 	if err != nil {

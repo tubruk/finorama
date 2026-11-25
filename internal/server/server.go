@@ -209,7 +209,8 @@ func (s *Server) handleInit(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleLock(w http.ResponseWriter, r *http.Request) {
 	s.vault.Lock()
-	log.Printf("[Server] Vault locked by user")
+	s.syncer.ClearSessionCache()
+	log.Printf("[Server] Vault locked by user and session cache cleared")
 	http.SetCookie(w, &http.Cookie{
 		Name:     "finorama_session",
 		Value:    "",

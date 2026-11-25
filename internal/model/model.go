@@ -31,6 +31,8 @@ type Holding struct {
 	ID           int64     `json:"id"`
 	AccountID    int64     `json:"account_id"`
 	AccountName  string    `json:"account_name,omitempty"`
+	CapturedAt   time.Time `json:"captured_at"`
+	CapturedDate string    `json:"captured_date"`
 	AssetType    string    `json:"asset_type"` // EQUITY, MUTUAL_FUND, BOND, CASH, OTHER
 	SecurityCode string    `json:"security_code"`
 	SecurityName string    `json:"security_name"`
@@ -39,7 +41,6 @@ type Holding struct {
 	Quantity     float64   `json:"quantity"`
 	Price        float64   `json:"price"`
 	TotalValue   float64   `json:"total_value"`
-	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 type DailySnapshot struct {
