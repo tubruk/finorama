@@ -2,7 +2,6 @@
 
 [![CI](https://github.com/tubruk/finorama/actions/workflows/ci.yml/badge.svg)](https://github.com/tubruk/finorama/actions)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io%2Ftubruk%2Ffinorama-blue?logo=docker)](https://github.com/tubruk/finorama/pkgs/container/finorama)
-[![Go Report Card](https://goreportcard.com/badge/github.com/tubruk/finorama)](https://goreportcard.com/report/github.com/tubruk/finorama)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Self-hosted web dashboard and personal portfolio overview for **AKSES KSEI** (Kustodian Sentral Efek Indonesia).

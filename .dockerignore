@@ -1,0 +1,7 @@
+.git
+.agents
+bin
+data
+web/node_modules
+*.out
+.DS_Store

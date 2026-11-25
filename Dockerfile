@@ -23,9 +23,9 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 # Copy backend source code and embedded assets
-COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 COPY main.go ./main.go
+COPY web/templates/ ./web/templates/
 COPY web/embed.go ./web/embed.go
 
 # Copy built frontend assets from frontend-builder
