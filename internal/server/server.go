@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chickenzord/finorama/internal/api"
 	"github.com/chickenzord/finorama/internal/crypto"
 	"github.com/chickenzord/finorama/internal/store"
 	"github.com/chickenzord/finorama/internal/syncer"
@@ -21,12 +22,13 @@ import (
 )
 
 type Server struct {
-	store     *store.Store
-	vault     *vault.Vault
-	syncer    *syncer.Syncer
-	templates map[string]*template.Template
-	sessionMu sync.RWMutex
-	sessions  map[string]time.Time
+	store      *store.Store
+	vault      *vault.Vault
+	syncer     *syncer.Syncer
+	apiHandler http.Handler
+	templates  map[string]*template.Template
+	sessionMu  sync.RWMutex
+	sessions   map[string]time.Time
 }
 
 func NewWithTemplateFS(st *store.Store, v *vault.Vault, sync *syncer.Syncer, templatesFS fs.FS) (*Server, error) {
@@ -56,18 +58,33 @@ func NewWithTemplateFS(st *store.Store, v *vault.Vault, sync *syncer.Syncer, tem
 		tmplMap[page] = t
 	}
 
+	// API middleware with local frontend dev origins
+	allowedOrigins := []string{
+		"http://localhost:5173",
+		"http://127.0.0.1:5173",
+		"http://localhost:3000",
+		"http://127.0.0.1:3000",
+	}
+	apiMW := api.NewMiddleware(v, allowedOrigins)
+	apiServer := api.New(st, v, sync, apiMW)
+
 	return &Server{
-		store:     st,
-		vault:     v,
-		syncer:    sync,
-		templates: tmplMap,
-		sessions:  make(map[string]time.Time),
+		store:      st,
+		vault:      v,
+		syncer:     sync,
+		apiHandler: http.StripPrefix("/api/v1", apiServer.Routes()),
+		templates:  tmplMap,
+		sessions:   make(map[string]time.Time),
 	}, nil
 }
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 
+	// REST API mounted under /api/v1/
+	mux.Handle("/api/v1/", s.apiHandler)
+
+	// HTML Monolith routes
 	mux.HandleFunc("/", s.handleDashboard)
 	mux.HandleFunc("/unlock", s.handleUnlock)
 	mux.HandleFunc("/init", s.handleInit)
