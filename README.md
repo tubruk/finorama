@@ -4,7 +4,36 @@ Self-hosted web-based personal finance & portfolio overview for **KSEI** (Kustod
 
 Inspired by [ksei-exporter](https://github.com/chickenzord/ksei-exporter) and powered by [goksei](https://github.com/chickenzord/goksei).
 
-## Features
+## Development
+
+### Quick Start (Dev Mode)
+
+Run both Go backend (port 8080) and Vite frontend (port 5173 with HMR) with a single command:
+
+```bash
+make dev
+```
+
+Then open `http://localhost:5173`. Vite automatically proxies `/api` calls to `:8080`.
+
+Or run them individually:
+```bash
+# Terminal 1: Backend
+make dev-backend
+
+# Terminal 2: Frontend
+make dev-ui
+```
+
+### Production Build
+
+```bash
+# Builds UI assets into web/dist and compiles standalone Go binary
+make build
+
+# Run single self-contained binary
+./bin/finorama serve
+```
 
 - **Multi-Account Support**: Manage multiple AKSES KSEI accounts in one unified dashboard.
 - **Master Passphrase Vault**: Zero credentials stored in plaintext. Passwords encrypted in local SQLite using AES-256-GCM derived via Argon2id. Passphrase kept in-memory only while unlocked.

@@ -17,6 +17,7 @@ import (
 	"github.com/chickenzord/finorama/internal/store"
 	"github.com/chickenzord/finorama/internal/syncer"
 	"github.com/chickenzord/finorama/internal/vault"
+	"github.com/chickenzord/finorama/web"
 	"golang.org/x/text/language"
 	"golang.org/x/text/message"
 )
@@ -84,8 +85,19 @@ func (s *Server) Routes() http.Handler {
 	// REST API mounted under /api/v1/
 	mux.Handle("/api/v1/", s.apiHandler)
 
-	// HTML Monolith routes
-	mux.HandleFunc("/", s.handleDashboard)
+	// Embedded React SPA Handler fallback
+	spaHandler := web.Handler()
+
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// If request is for an API route or template route
+		if r.URL.Path == "/classic" {
+			s.handleDashboard(w, r)
+			return
+		}
+		spaHandler.ServeHTTP(w, r)
+	})
+
+	// Keep existing classic endpoints for backward compatibility
 	mux.HandleFunc("/unlock", s.handleUnlock)
 	mux.HandleFunc("/init", s.handleInit)
 	mux.HandleFunc("/lock", s.handleLock)

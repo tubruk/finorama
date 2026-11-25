@@ -14,6 +14,12 @@ data/
 .goksei-auth/
 ksei_sessions/
 
+# Web / Frontend builds
+web/dist/
+web/node_modules/
+.bun/
+*.local
+
 # OS / Editor
 .DS_Store
 .idea/
