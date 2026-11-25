@@ -1,67 +1,72 @@
 # Finorama
 
-Self-hosted web-based personal finance & portfolio overview for **KSEI** (Kustodian Sentral Efek Indonesia), written in Go.
+[![CI](https://github.com/tubruk/finorama/actions/workflows/ci.yml/badge.svg)](https://github.com/tubruk/finorama/actions)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io%2Ftubruk%2Ffinorama-blue?logo=docker)](https://github.com/tubruk/finorama/pkgs/container/finorama)
+[![Go Report Card](https://goreportcard.com/badge/github.com/tubruk/finorama)](https://goreportcard.com/report/github.com/tubruk/finorama)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+Self-hosted web dashboard and personal portfolio overview for **AKSES KSEI** (Kustodian Sentral Efek Indonesia).
+
+Finorama aggregates Indonesian investment holdings (stocks, mutual funds, bonds, and RDN cash balances) across multiple accounts in a unified interface, with zero plain credentials stored on disk.
 
 Inspired by [ksei-exporter](https://github.com/chickenzord/ksei-exporter) and powered by [goksei](https://github.com/chickenzord/goksei).
 
-## Development
+---
 
-### Quick Start (Dev Mode)
+## Features
 
-Run both Go backend (port 8080) and Vite frontend (port 5173 with HMR) with a single command:
+- **Multi-Account Aggregation**: View multiple KSEI accounts and consolidated balances in one place.
+- **Client-Side Encryption Vault**: Passwords encrypted with AES-256-GCM (Argon2id key derivation). Master passphrase resides strictly in RAM while unlocked.
+- **Embedded SQLite (Pure Go)**: Standalone single-binary engine using modernc pure Go SQLite in WAL mode.
+- **Automated Nightly Sync**: Scheduled background sync (01:00 AM post-KSEI settlement) with manual trigger option.
+- **Modern Responsive UI**: React + Tailwind CSS dashboard with historical valuation timeline chart.
+
+---
+
+## Quick Start (Docker)
+
+Run with Docker using GitHub Container Registry (`ghcr.io`):
 
 ```bash
+docker run -d \
+  --name finorama \
+  -p 8080:8080 \
+  -v $(pwd)/data:/data \
+  ghcr.io/tubruk/finorama:latest
+```
+
+Open `http://localhost:8080` in your browser:
+1. Configure your master passphrase on first start.
+2. Add your AKSES KSEI accounts.
+3. Trigger sync to fetch holdings and portfolio valuation.
+
+### Docker Compose
+
+```yaml
+version: "3.8"
+
+services:
+  finorama:
+    image: ghcr.io/tubruk/finorama:latest
+    container_name: finorama
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      - TZ=Asia/Jakarta
+```
+
+---
+
+## Local Development
+
+```bash
+# Run backend (:8080) and frontend (:5173) concurrently with hot reload
 make dev
-```
 
-Then open `http://localhost:5173`. Vite automatically proxies `/api` calls to `:8080`.
-
-Or run them individually:
-```bash
-# Terminal 1: Backend
-make dev-backend
-
-# Terminal 2: Frontend
-make dev-ui
-```
-
-### Production Build
-
-```bash
-# Builds UI assets into web/dist and compiles standalone Go binary
+# Or build standalone release binary (bundles frontend inside Go binary)
 make build
-
-# Run single self-contained binary
-./bin/finorama serve
+./bin/finorama serve -port 8080 -data-dir ./data
 ```
-
-- **Multi-Account Support**: Manage multiple AKSES KSEI accounts in one unified dashboard.
-- **Master Passphrase Vault**: Zero credentials stored in plaintext. Passwords encrypted in local SQLite using AES-256-GCM derived via Argon2id. Passphrase kept in-memory only while unlocked. Note that the vault operates as a single-tenant process-level shared state: unlocking enables both user sessions and background sync workers; locking purges the key in RAM across all sessions.
-- **Pure Go SQLite**: Single-binary deployment with modernc pure Go SQLite engine and WAL mode enabled.
-- **Automated Daily Capture**: Scheduled background syncer (default: 01:00 AM after KSEI midnight data updates) + manual trigger button via HTMX.
-- **Snapshot & Breakdown**: Aggregated portfolio totals, asset allocation (Equity, Mutual Funds, Bonds, RDN Cash), and historical valuation timeline.
-
-## CLI Usage
-
-Finorama includes interactive CLI commands alongside the web dashboard:
-
-```bash
-# Connect and test KSEI credentials interactively
-./finorama account add
-
-# View latest holding balances (interactive picker or pass account ID)
-./finorama holdings
-./finorama holdings 1
-
-# Manually trigger capture and sync
-./finorama sync
-./finorama sync 1
-
-# Run web dashboard
-./finorama serve -port 8080 -data-dir ./data
-```
-
-Then visit `http://localhost:8080`:
-1. On first run, configure your master passphrase.
-2. Go to **Accounts** and connect your AKSES KSEI credentials.
-3. Click **Trigger Sync Now** to fetch the latest holdings and portfolio valuation.
