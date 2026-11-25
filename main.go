@@ -1,14 +1,19 @@
 package main
 
 import (
+	"context"
 	"embed"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
+	"syscall"
+	"time"
 
 	cliHandler "github.com/chickenzord/finorama/internal/cli"
 	"github.com/chickenzord/finorama/internal/server"
@@ -165,8 +170,32 @@ func runServer(host string, dataDir string, port int) {
 	}
 
 	addr := fmt.Sprintf("%s:%d", host, port)
-	log.Printf("Starting Finorama on http://%s (data: %s)", addr, dataDir)
-	if err := http.ListenAndServe(addr, srv.Routes()); err != nil {
-		log.Fatalf("Server stopped: %v", err)
+	httpServer := &http.Server{
+		Addr:              addr,
+		Handler:           srv.Routes(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		log.Printf("Starting Finorama on http://%s (data: %s)", addr, dataDir)
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("Server error: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Println("Shutting down Finorama server gracefully...")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		log.Printf("HTTP server shutdown error: %v", err)
 	}
 }

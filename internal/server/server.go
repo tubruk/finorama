@@ -30,6 +30,7 @@ type Server struct {
 	templates  map[string]*template.Template
 	sessionMu  sync.RWMutex
 	sessions   map[string]time.Time
+	apiMW      *api.Middleware
 }
 
 func NewWithTemplateFS(st *store.Store, v *vault.Vault, sync *syncer.Syncer, templatesFS fs.FS) (*Server, error) {
@@ -76,6 +77,7 @@ func NewWithTemplateFS(st *store.Store, v *vault.Vault, sync *syncer.Syncer, tem
 		apiHandler: http.StripPrefix("/api/v1", apiServer.Routes()),
 		templates:  tmplMap,
 		sessions:   make(map[string]time.Time),
+		apiMW:      apiMW,
 	}, nil
 }
 
@@ -97,13 +99,34 @@ func (s *Server) Routes() http.Handler {
 		spaHandler.ServeHTTP(w, r)
 	})
 
+	// Rate limiter for sensitive form POST operations (e.g. unlock, init, sync)
+	rateLimiter := s.apiMW.RateLimit(10, 2)
+
 	// Keep existing classic endpoints for backward compatibility
-	mux.HandleFunc("/unlock", s.handleUnlock)
-	mux.HandleFunc("/init", s.handleInit)
+	mux.HandleFunc("/unlock", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			rateLimiter(http.HandlerFunc(s.handleUnlock)).ServeHTTP(w, r)
+			return
+		}
+		s.handleUnlock(w, r)
+	})
+	mux.HandleFunc("/init", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			rateLimiter(http.HandlerFunc(s.handleInit)).ServeHTTP(w, r)
+			return
+		}
+		s.handleInit(w, r)
+	})
 	mux.HandleFunc("/lock", s.handleLock)
 	mux.HandleFunc("/accounts", s.handleAccounts)
 	mux.HandleFunc("/accounts/delete", s.handleAccountDelete)
-	mux.HandleFunc("/sync", s.handleSync)
+	mux.HandleFunc("/sync", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			rateLimiter(http.HandlerFunc(s.handleSync)).ServeHTTP(w, r)
+			return
+		}
+		s.handleSync(w, r)
+	})
 
 	return mux
 }
@@ -141,7 +164,7 @@ func (s *Server) createSession(w http.ResponseWriter) {
 }
 
 func (s *Server) handleUnlock(w http.ResponseWriter, r *http.Request) {
-	initialized, err := s.store.IsInitialized()
+	initialized, err := s.store.IsInitialized(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -162,7 +185,7 @@ func (s *Server) handleUnlock(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodPost {
 		pass := r.FormValue("passphrase")
-		key, valid, err := s.store.VerifyAndDeriveKey(pass)
+		key, valid, err := s.store.VerifyAndDeriveKey(r.Context(), pass)
 		if err != nil {
 			log.Printf("[Server] Error verifying master passphrase: %v", err)
 			s.render(w, "unlock.html", map[string]any{"Error": "Database error: " + err.Error()})
@@ -182,7 +205,7 @@ func (s *Server) handleUnlock(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleInit(w http.ResponseWriter, r *http.Request) {
-	initialized, err := s.store.IsInitialized()
+	initialized, err := s.store.IsInitialized(r.Context())
 	if err != nil {
 		log.Printf("[Server] Error checking DB init status: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -204,10 +227,10 @@ func (s *Server) handleInit(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		pass := r.FormValue("passphrase")
 		confirm := r.FormValue("confirm_passphrase")
-		if len(pass) < 6 {
+		if len(pass) < crypto.MinPassphraseLen {
 			s.render(w, "unlock.html", map[string]any{
 				"IsFirstTime": true,
-				"Error":       "Passphrase must be at least 6 characters",
+				"Error":       fmt.Sprintf("Passphrase must be at least %d characters", crypto.MinPassphraseLen),
 			})
 			return
 		}
@@ -219,7 +242,7 @@ func (s *Server) handleInit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		key, err := s.store.InitializeMaster(pass)
+		key, err := s.store.InitializeMaster(r.Context(), pass)
 		if err != nil {
 			log.Printf("[Server] Failed to initialize master vault: %v", err)
 			s.render(w, "unlock.html", map[string]any{
@@ -243,6 +266,9 @@ func (s *Server) handleLock(w http.ResponseWriter, r *http.Request) {
 	}
 	s.vault.Lock()
 	s.syncer.ClearSessionCache()
+	s.sessionMu.Lock()
+	s.sessions = make(map[string]time.Time)
+	s.sessionMu.Unlock()
 	log.Printf("[Server] Vault locked by user and session cache cleared")
 	http.SetCookie(w, &http.Cookie{
 		Name:     "finorama_session",
@@ -261,7 +287,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	overview, err := s.store.GetPortfolioOverview()
+	overview, err := s.store.GetPortfolioOverview(r.Context())
 	if err != nil {
 		log.Printf("[Server] Error querying portfolio overview: %v", err)
 		http.Error(w, "Failed to load portfolio: "+err.Error(), http.StatusInternalServerError)
@@ -295,10 +321,10 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		newAcc, err := s.store.AddAccount(key, name, username, password)
+		newAcc, err := s.store.AddAccount(r.Context(), key, name, username, password)
 		if err != nil {
 			log.Printf("[Server] Failed to add account '%s' (%s): %v", name, username, err)
-			accs, _ := s.store.ListAccounts()
+			accs, _ := s.store.ListAccounts(r.Context())
 			s.render(w, "accounts.html", map[string]any{
 				"IsUnlocked": true,
 				"Accounts":   accs,
@@ -312,7 +338,7 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	accs, err := s.store.ListAccounts()
+	accs, err := s.store.ListAccounts(r.Context())
 	if err != nil {
 		log.Printf("[Server] Error listing accounts: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -339,7 +365,7 @@ func (s *Server) handleAccountDelete(w http.ResponseWriter, r *http.Request) {
 	idStr := r.FormValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err == nil {
-		if delErr := s.store.DeleteAccount(id); delErr != nil {
+		if delErr := s.store.DeleteAccount(r.Context(), id); delErr != nil {
 			log.Printf("[Server] Error deleting account ID %d: %v", id, delErr)
 		} else {
 			log.Printf("[Server] Deleted account ID %d", id)

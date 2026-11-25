@@ -122,8 +122,12 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("cannot sync: %w", err)
 	}
+	// Zero out initial key check bytes
+	for i := range key {
+		key[i] = 0
+	}
 
-	accounts, err := s.store.ListAccounts()
+	accounts, err := s.store.ListAccounts(ctx)
 	if err != nil {
 		return fmt.Errorf("list accounts: %w", err)
 	}
@@ -141,21 +145,37 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 			continue
 		}
 
+		// Re-check vault key before syncing each account
+		key, err := s.vault.Key()
+		if err != nil {
+			syncErrors = append(syncErrors, fmt.Sprintf("vault locked before syncing %s: %v", acc.Name, err))
+			break
+		}
+
 		// Wait between consecutive accounts to avoid rate limiting
 		if syncedCount > 0 && delay > 0 {
 			log.Printf("[Syncer] Waiting %v before syncing next account (%s)...", delay, acc.Name)
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
+				for i := range key {
+					key[i] = 0
+				}
 				return ctx.Err()
 			}
 		}
 
 		syncedCount++
-		if err := s.syncAccount(ctx, key, acc, capturedAt); err != nil {
-			log.Printf("[Syncer] Failed to sync account %s (%s): %v", acc.Name, acc.Username, err)
-			_ = s.store.UpdateAccountSyncStatus(acc.ID, err)
-			syncErrors = append(syncErrors, fmt.Sprintf("%s: %v", acc.Name, err))
+		syncErr := s.syncAccount(ctx, key, acc, capturedAt)
+		// Explicitly zero out key copy bytes after syncing account
+		for i := range key {
+			key[i] = 0
+		}
+
+		if syncErr != nil {
+			log.Printf("[Syncer] Failed to sync account %s (%s): %v", acc.Name, acc.Username, syncErr)
+			_ = s.store.UpdateAccountSyncStatus(ctx, acc.ID, syncErr)
+			syncErrors = append(syncErrors, fmt.Sprintf("%s: %v", acc.Name, syncErr))
 		}
 	}
 
@@ -187,14 +207,18 @@ func (s *Syncer) SyncAccountByID(ctx context.Context, accountID int64) error {
 		return fmt.Errorf("vault locked: %w", err)
 	}
 
-	acc, err := s.store.GetAccountByID(accountID)
+	acc, err := s.store.GetAccountByID(ctx, accountID)
 	if err != nil {
 		return err
 	}
 
 	capturedAt := time.Now()
-	if err := s.syncAccount(ctx, key, *acc, capturedAt); err != nil {
-		_ = s.store.UpdateAccountSyncStatus(acc.ID, err)
+	err = s.syncAccount(ctx, key, *acc, capturedAt)
+	for i := range key {
+		key[i] = 0
+	}
+	if err != nil {
+		_ = s.store.UpdateAccountSyncStatus(ctx, acc.ID, err)
 		return err
 	}
 
@@ -220,34 +244,44 @@ func (s *Syncer) syncAccount(ctx context.Context, key []byte, acc model.Account,
 
 	var holdings []model.Holding
 	capturedDate := capturedAt.Format("2006-01-02")
+	var fetchErrors []string
 
 	// 1. Fetch Equities
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	eqBalances, err := client.GetShareBalances(goksei.EquityType)
 	if err != nil {
 		return fmt.Errorf("get equity balances: %w", err)
 	}
-	for _, item := range eqBalances.Data {
-		val := item.CurrentValue()
-		holdings = append(holdings, model.Holding{
-			AccountID:    acc.ID,
-			CapturedAt:   capturedAt,
-			CapturedDate: capturedDate,
-			AssetType:    "EQUITY",
-			SecurityCode: item.Symbol(),
-			SecurityName: item.FullName,
-			Participant:  item.Participant,
-			Currency:     item.Currency,
-			Quantity:     item.Amount,
-			Price:        item.ClosingPrice,
-			TotalValue:   val,
-		})
+	if eqBalances != nil && eqBalances.Data != nil {
+		for _, item := range eqBalances.Data {
+			val := item.CurrentValue()
+			holdings = append(holdings, model.Holding{
+				AccountID:    acc.ID,
+				CapturedAt:   capturedAt,
+				CapturedDate: capturedDate,
+				AssetType:    "EQUITY",
+				SecurityCode: item.Symbol(),
+				SecurityName: item.FullName,
+				Participant:  item.Participant,
+				Currency:     item.Currency,
+				Quantity:     item.Amount,
+				Price:        item.ClosingPrice,
+				TotalValue:   val,
+			})
+		}
 	}
 
 	// 2. Fetch Mutual Funds
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	mfBalances, err := client.GetShareBalances(goksei.MutualFundType)
 	if err != nil {
 		log.Printf("[Syncer] Mutual fund balances error for %s: %v", acc.Username, err)
-	} else {
+		fetchErrors = append(fetchErrors, fmt.Sprintf("mutual funds: %v", err))
+	} else if mfBalances != nil && mfBalances.Data != nil {
 		for _, item := range mfBalances.Data {
 			val := item.CurrentValue()
 			holdings = append(holdings, model.Holding{
@@ -267,10 +301,14 @@ func (s *Syncer) syncAccount(ctx context.Context, key []byte, acc model.Account,
 	}
 
 	// 3. Fetch Bonds
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	bondBalances, err := client.GetShareBalances(goksei.BondType)
 	if err != nil {
 		log.Printf("[Syncer] Bond balances error for %s: %v", acc.Username, err)
-	} else {
+		fetchErrors = append(fetchErrors, fmt.Sprintf("bonds: %v", err))
+	} else if bondBalances != nil && bondBalances.Data != nil {
 		for _, item := range bondBalances.Data {
 			val := item.CurrentValue()
 			holdings = append(holdings, model.Holding{
@@ -290,10 +328,14 @@ func (s *Syncer) syncAccount(ctx context.Context, key []byte, acc model.Account,
 	}
 
 	// 4. Fetch Cash balances (RDN)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	cashResp, err := client.GetCashBalances()
 	if err != nil {
 		log.Printf("[Syncer] Cash balances error for %s: %v", acc.Username, err)
-	} else {
+		fetchErrors = append(fetchErrors, fmt.Sprintf("cash balances: %v", err))
+	} else if cashResp != nil && cashResp.Data != nil {
 		for _, item := range cashResp.Data {
 			val := item.CurrentBalance()
 			bankName, ok := goksei.CustodianBankNameByID(item.BankID)
@@ -316,8 +358,13 @@ func (s *Syncer) syncAccount(ctx context.Context, key []byte, acc model.Account,
 		}
 	}
 
+	// If any balance calls failed, do not wipe/corrupt holdings with partial data
+	if len(fetchErrors) > 0 {
+		return fmt.Errorf("fetch balances failed: %s", strings.Join(fetchErrors, "; "))
+	}
+
 	// Persist holdings
-	if err := s.store.SaveAccountHoldings(acc.ID, holdings, capturedAt); err != nil {
+	if err := s.store.SaveAccountHoldings(ctx, acc.ID, holdings, capturedAt); err != nil {
 		return fmt.Errorf("persist holdings: %w", err)
 	}
 

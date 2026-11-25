@@ -16,11 +16,12 @@ import (
 )
 
 type Middleware struct {
-	vault      *vault.Vault
-	tokens     map[string]time.Time
-	tokenMu    sync.RWMutex
-	rateLimit  map[string]*rateBucket
-	rateMu     sync.Mutex
+	vault          *vault.Vault
+	tokens         map[string]time.Time
+	tokenMu        sync.RWMutex
+	rateLimit      map[string]*rateBucket
+	rateMu         sync.Mutex
+	lastRateEvict  time.Time
 	allowedOrigins []string
 }
 
@@ -62,11 +63,18 @@ func (m *Middleware) CORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 		allowOrigin := ""
+		allowCredentials := false
 
 		if origin != "" {
 			for _, allowed := range m.allowedOrigins {
-				if allowed == "*" || strings.EqualFold(origin, allowed) {
+				if allowed == "*" {
+					allowOrigin = "*"
+					allowCredentials = false
+					break
+				}
+				if strings.EqualFold(origin, allowed) {
 					allowOrigin = origin
+					allowCredentials = true
 					break
 				}
 			}
@@ -76,7 +84,9 @@ func (m *Middleware) CORS(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", allowOrigin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Finorama-Token")
-			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			if allowCredentials {
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+			}
 			w.Header().Set("Access-Control-Max-Age", "86400")
 		}
 
@@ -101,8 +111,9 @@ func (m *Middleware) RateLimit(capacity float64, refillPerSec float64) func(http
 			m.rateMu.Lock()
 			now := time.Now()
 
-			// Evict stale buckets to prevent unbounded memory growth
-			if len(m.rateLimit) > 1000 {
+			// Periodic safe cleanup of stale rate-limit buckets
+			if now.Sub(m.lastRateEvict) > time.Minute {
+				m.lastRateEvict = now
 				for k, b := range m.rateLimit {
 					if now.Sub(b.lastCheck) > 10*time.Minute {
 						delete(m.rateLimit, k)

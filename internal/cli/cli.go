@@ -11,6 +11,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/chickenzord/finorama/internal/crypto"
 	"github.com/chickenzord/finorama/internal/store"
 	"github.com/chickenzord/finorama/internal/syncer"
 	"github.com/chickenzord/finorama/internal/vault"
@@ -42,7 +43,8 @@ func New(st *store.Store, v *vault.Vault, sync *syncer.Syncer, dataDir string) *
 
 // UnlockVault prompts user for master passphrase to initialize or unlock.
 func (c *CLI) UnlockVault() ([]byte, error) {
-	init, err := c.store.IsInitialized()
+	ctx := context.Background()
+	init, err := c.store.IsInitialized(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("check db init: %w", err)
 	}
@@ -54,8 +56,8 @@ func (c *CLI) UnlockVault() ([]byte, error) {
 			if err != nil {
 				return nil, err
 			}
-			if len(p1) < 6 {
-				fmt.Println("Passphrase must be at least 6 characters.")
+			if len(p1) < crypto.MinPassphraseLen {
+				fmt.Printf("Passphrase must be at least %d characters.\n", crypto.MinPassphraseLen)
 				continue
 			}
 			p2, err := c.promptPassword("Confirm Master Passphrase: ")
@@ -67,7 +69,7 @@ func (c *CLI) UnlockVault() ([]byte, error) {
 				continue
 			}
 
-			key, err := c.store.InitializeMaster(p1)
+			key, err := c.store.InitializeMaster(ctx, p1)
 			if err != nil {
 				return nil, fmt.Errorf("init master: %w", err)
 			}
@@ -82,7 +84,7 @@ func (c *CLI) UnlockVault() ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		key, valid, err := c.store.VerifyAndDeriveKey(p)
+		key, valid, err := c.store.VerifyAndDeriveKey(ctx, p)
 		if err != nil {
 			return nil, fmt.Errorf("verify passphrase: %w", err)
 		}
@@ -136,7 +138,7 @@ func (c *CLI) AddAccount() error {
 		fmt.Println(" SUCCESS! Credentials verified.")
 	}
 
-	acc, err := c.store.AddAccount(key, name, username, password)
+	acc, err := c.store.AddAccount(context.Background(), key, name, username, password)
 	if err != nil {
 		return fmt.Errorf("failed to save account: %w", err)
 	}
@@ -162,7 +164,8 @@ func (c *CLI) AddAccount() error {
 
 // ShowHoldings interactively selects an account and displays latest holdings.
 func (c *CLI) ShowHoldings(accIDArg int64) error {
-	accounts, err := c.store.ListAccounts()
+	ctx := context.Background()
+	accounts, err := c.store.ListAccounts(ctx)
 	if err != nil {
 		return fmt.Errorf("list accounts: %w", err)
 	}
@@ -211,12 +214,13 @@ func (c *CLI) ShowHoldings(accIDArg int64) error {
 }
 
 func (c *CLI) showHoldings(accountID int64) error {
-	acc, err := c.store.GetAccountByID(accountID)
+	ctx := context.Background()
+	acc, err := c.store.GetAccountByID(ctx, accountID)
 	if err != nil {
 		return fmt.Errorf("account not found: %w", err)
 	}
 
-	holdings, err := c.store.GetHoldingsByAccountID(accountID)
+	holdings, err := c.store.GetHoldingsByAccountID(ctx, accountID)
 	if err != nil {
 		return fmt.Errorf("get holdings: %w", err)
 	}

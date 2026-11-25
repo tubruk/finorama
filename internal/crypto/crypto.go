@@ -3,7 +3,9 @@ package crypto
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
@@ -14,11 +16,14 @@ import (
 )
 
 const (
+	MinPassphraseLen = 8
+
 	saltLen = 16
 	keyLen  = 32
 	timeCost = 1
 	memoryCost = 64 * 1024
 	threads = 4
+	domainAuthKey = "finorama-passphrase-auth-v1"
 )
 
 // DeriveKey derives a 32-byte AES key from a passphrase and salt.
@@ -85,8 +90,10 @@ func Decrypt(key []byte, encoded string) ([]byte, error) {
 
 // HashPassphrase generates verification hash stored in DB to confirm unlock passphrase.
 func HashPassphrase(passphrase string, salt []byte) string {
-	key := argon2.IDKey([]byte(passphrase), salt, timeCost, memoryCost, threads, keyLen)
-	return base64.StdEncoding.EncodeToString(key)
+	derived := argon2.IDKey([]byte(passphrase), salt, timeCost, memoryCost, threads, keyLen)
+	mac := hmac.New(sha256.New, []byte(domainAuthKey))
+	mac.Write(derived)
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
 // VerifyPassphrase compares passphrase against stored hash using constant time comparison.

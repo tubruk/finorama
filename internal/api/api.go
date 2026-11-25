@@ -3,12 +3,14 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/chickenzord/finorama/internal/crypto"
 	"github.com/chickenzord/finorama/internal/store"
 	"github.com/chickenzord/finorama/internal/syncer"
 	"github.com/chickenzord/finorama/internal/vault"
@@ -59,7 +61,7 @@ func (a *API) Routes() http.Handler {
 
 // GET /vault/status
 func (a *API) handleVaultStatus(w http.ResponseWriter, r *http.Request) {
-	init, err := a.store.IsInitialized()
+	init, err := a.store.IsInitialized(r.Context())
 	if err != nil {
 		slog.Error("Failed to check vault init", "err", err)
 		WriteError(w, http.StatusInternalServerError, "DB_ERROR", "Failed to query database status")
@@ -79,14 +81,15 @@ type initRequest struct {
 }
 
 func (a *API) handleVaultInit(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req initRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		WriteError(w, http.StatusBadRequest, "INVALID_BODY", "Invalid JSON request body")
 		return
 	}
 
-	if len(req.Passphrase) < 8 {
-		WriteError(w, http.StatusBadRequest, "WEAK_PASSPHRASE", "Passphrase must be at least 8 characters")
+	if len(req.Passphrase) < crypto.MinPassphraseLen {
+		WriteError(w, http.StatusBadRequest, "WEAK_PASSPHRASE", fmt.Sprintf("Passphrase must be at least %d characters", crypto.MinPassphraseLen))
 		return
 	}
 	if req.Passphrase != req.ConfirmPassphrase {
@@ -94,7 +97,7 @@ func (a *API) handleVaultInit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key, err := a.store.InitializeMaster(req.Passphrase)
+	key, err := a.store.InitializeMaster(r.Context(), req.Passphrase)
 	if err != nil {
 		slog.Error("Failed to initialize vault", "err", err)
 		WriteError(w, http.StatusBadRequest, "INIT_FAILED", err.Error())
@@ -117,13 +120,14 @@ type unlockRequest struct {
 }
 
 func (a *API) handleVaultUnlock(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req unlockRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		WriteError(w, http.StatusBadRequest, "INVALID_BODY", "Invalid JSON request body")
 		return
 	}
 
-	key, valid, err := a.store.VerifyAndDeriveKey(req.Passphrase)
+	key, valid, err := a.store.VerifyAndDeriveKey(r.Context(), req.Passphrase)
 	if err != nil {
 		slog.Error("Error checking master passphrase", "err", err)
 		WriteError(w, http.StatusInternalServerError, "DB_ERROR", "Failed to verify passphrase")
@@ -160,7 +164,7 @@ func (a *API) handleVaultLock(w http.ResponseWriter, r *http.Request) {
 
 // GET /portfolio
 func (a *API) handlePortfolio(w http.ResponseWriter, r *http.Request) {
-	overview, err := a.store.GetPortfolioOverview()
+	overview, err := a.store.GetPortfolioOverview(r.Context())
 	if err != nil {
 		slog.Error("Error fetching portfolio overview", "err", err)
 		WriteError(w, http.StatusInternalServerError, "DB_ERROR", "Failed to fetch portfolio data")
@@ -172,7 +176,7 @@ func (a *API) handlePortfolio(w http.ResponseWriter, r *http.Request) {
 
 // GET /accounts
 func (a *API) handleAccountsList(w http.ResponseWriter, r *http.Request) {
-	accounts, err := a.store.ListAccounts()
+	accounts, err := a.store.ListAccounts(r.Context())
 	if err != nil {
 		slog.Error("Error listing accounts", "err", err)
 		WriteError(w, http.StatusInternalServerError, "DB_ERROR", "Failed to list accounts")
@@ -192,6 +196,7 @@ type addAccountRequest struct {
 }
 
 func (a *API) handleAccountsAdd(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req addAccountRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		WriteError(w, http.StatusBadRequest, "INVALID_BODY", "Invalid JSON request body")
@@ -211,7 +216,7 @@ func (a *API) handleAccountsAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	acc, err := a.store.AddAccount(key, req.Name, req.Username, req.Password)
+	acc, err := a.store.AddAccount(r.Context(), key, req.Name, req.Username, req.Password)
 	if err != nil {
 		slog.Error("Failed to add account", "username", req.Username, "err", err)
 		WriteError(w, http.StatusBadRequest, "ADD_FAILED", err.Error())
@@ -231,7 +236,7 @@ func (a *API) handleAccountsDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.store.DeleteAccount(id); err != nil {
+	if err := a.store.DeleteAccount(r.Context(), id); err != nil {
 		slog.Error("Failed to delete account", "id", id, "err", err)
 		WriteError(w, http.StatusInternalServerError, "DELETE_FAILED", "Failed to delete account")
 		return
