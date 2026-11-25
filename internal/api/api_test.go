@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/chickenzord/finorama/internal/api"
@@ -453,5 +454,38 @@ func TestCORSPreflight(t *testing.T) {
 	}
 	if recWild.Header().Get("Access-Control-Allow-Credentials") != "" {
 		t.Fatalf("expected no Access-Control-Allow-Credentials header with wildcard origin, got %s", recWild.Header().Get("Access-Control-Allow-Credentials"))
+	}
+}
+
+func TestRecoverMiddleware(t *testing.T) {
+	mw := api.NewMiddleware(nil, nil)
+
+	// API path panic -> JSON 500
+	apiPanicHandler := mw.Recover(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("something went critically wrong in api")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/panic", nil)
+	rec := httptest.NewRecorder()
+	apiPanicHandler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("expected status 500 on panic, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "INTERNAL_SERVER_ERROR") {
+		t.Errorf("expected INTERNAL_SERVER_ERROR in json body, got %s", rec.Body.String())
+	}
+
+	// Non-API path panic -> plain text 500
+	webPanicHandler := mw.Recover(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("something went critically wrong in web")
+	}))
+
+	reqWeb := httptest.NewRequest(http.MethodGet, "/classic/panic", nil)
+	recWeb := httptest.NewRecorder()
+	webPanicHandler.ServeHTTP(recWeb, reqWeb)
+
+	if recWeb.Code != http.StatusInternalServerError {
+		t.Errorf("expected status 500 on panic, got %d", recWeb.Code)
 	}
 }

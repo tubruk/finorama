@@ -3,7 +3,7 @@ package syncer
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -73,19 +73,32 @@ func (s *Syncer) SetAccountDelay(d time.Duration) {
 
 // StartCron starts cron job capturing at 01:00 AM daily
 func (s *Syncer) StartCron() {
+	schedule := "0 1 * * *"
+	timeout := 10 * time.Minute
+
+	s.mu.Lock()
+	delay := s.accountDelay
+	s.mu.Unlock()
+
+	slog.Info("Starting periodic portfolio sync worker",
+		"schedule", schedule,
+		"account_delay", delay.String(),
+		"job_timeout", timeout.String(),
+	)
+
 	// Daily at 01:00 AM (just after midnight update)
-	_, err := s.cron.AddFunc("0 1 * * *", func() {
-		log.Println("[Syncer] Starting scheduled portfolio capture...")
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	_, err := s.cron.AddFunc(schedule, func() {
+		slog.Info("Starting scheduled portfolio capture")
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		if err := s.SyncAll(ctx); err != nil {
-			log.Printf("[Syncer] Scheduled capture error: %v", err)
+			slog.Error("Scheduled portfolio capture error", "err", err)
 		} else {
-			log.Println("[Syncer] Scheduled portfolio capture complete.")
+			slog.Info("Scheduled portfolio capture complete")
 		}
 	})
 	if err != nil {
-		log.Printf("[Syncer] Failed to schedule cron: %v", err)
+		slog.Error("Failed to schedule cron", "schedule", schedule, "err", err)
 		return
 	}
 	s.cron.Start()
@@ -154,7 +167,7 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 
 		// Wait between consecutive accounts to avoid rate limiting
 		if syncedCount > 0 && delay > 0 {
-			log.Printf("[Syncer] Waiting %v before syncing next account (%s)...", delay, acc.Name)
+			slog.Info("Waiting before syncing next account", "delay", delay.String(), "account", acc.Name)
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
@@ -173,7 +186,7 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 		}
 
 		if syncErr != nil {
-			log.Printf("[Syncer] Failed to sync account %s (%s): %v", acc.Name, acc.Username, syncErr)
+			slog.Error("Failed to sync account", "name", acc.Name, "username", acc.Username, "err", syncErr)
 			_ = s.store.UpdateAccountSyncStatus(ctx, acc.ID, syncErr)
 			syncErrors = append(syncErrors, fmt.Sprintf("%s: %v", acc.Name, syncErr))
 		}
@@ -226,6 +239,8 @@ func (s *Syncer) SyncAccountByID(ctx context.Context, accountID int64) error {
 }
 
 func (s *Syncer) syncAccount(ctx context.Context, key []byte, acc model.Account, capturedAt time.Time) error {
+	slog.Info("Syncing account", "account", acc.Name, "username", acc.Username)
+
 	plainPassBytes, err := crypto.Decrypt(key, acc.EncryptedPassword)
 	if err != nil {
 		return fmt.Errorf("decrypt account password: %w", err)
@@ -250,11 +265,14 @@ func (s *Syncer) syncAccount(ctx context.Context, key []byte, acc model.Account,
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	tEq := time.Now()
 	eqBalances, err := client.GetShareBalances(goksei.EquityType)
 	if err != nil {
 		return fmt.Errorf("get equity balances: %w", err)
 	}
+	eqCount := 0
 	if eqBalances != nil && eqBalances.Data != nil {
+		eqCount = len(eqBalances.Data)
 		for _, item := range eqBalances.Data {
 			val := item.CurrentValue()
 			holdings = append(holdings, model.Holding{
@@ -272,90 +290,109 @@ func (s *Syncer) syncAccount(ctx context.Context, key []byte, acc model.Account,
 			})
 		}
 	}
+	slog.Info("Fetched equities", "account", acc.Name, "count", eqCount, "duration", time.Since(tEq).String())
 
 	// 2. Fetch Mutual Funds
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	tMf := time.Now()
 	mfBalances, err := client.GetShareBalances(goksei.MutualFundType)
 	if err != nil {
-		log.Printf("[Syncer] Mutual fund balances error for %s: %v", acc.Username, err)
+		slog.Error("Mutual fund balances error", "account", acc.Name, "username", acc.Username, "err", err)
 		fetchErrors = append(fetchErrors, fmt.Sprintf("mutual funds: %v", err))
-	} else if mfBalances != nil && mfBalances.Data != nil {
-		for _, item := range mfBalances.Data {
-			val := item.CurrentValue()
-			holdings = append(holdings, model.Holding{
-				AccountID:    acc.ID,
-				CapturedAt:   capturedAt,
-				CapturedDate: capturedDate,
-				AssetType:    "MUTUAL_FUND",
-				SecurityCode: item.Symbol(),
-				SecurityName: item.FullName,
-				Participant:  item.Participant,
-				Currency:     item.Currency,
-				Quantity:     item.Amount,
-				Price:        item.ClosingPrice,
-				TotalValue:   val,
-			})
+	} else {
+		mfCount := 0
+		if mfBalances != nil && mfBalances.Data != nil {
+			mfCount = len(mfBalances.Data)
+			for _, item := range mfBalances.Data {
+				val := item.CurrentValue()
+				holdings = append(holdings, model.Holding{
+					AccountID:    acc.ID,
+					CapturedAt:   capturedAt,
+					CapturedDate: capturedDate,
+					AssetType:    "MUTUAL_FUND",
+					SecurityCode: item.Symbol(),
+					SecurityName: item.FullName,
+					Participant:  item.Participant,
+					Currency:     item.Currency,
+					Quantity:     item.Amount,
+					Price:        item.ClosingPrice,
+					TotalValue:   val,
+				})
+			}
 		}
+		slog.Info("Fetched mutual funds", "account", acc.Name, "count", mfCount, "duration", time.Since(tMf).String())
 	}
 
 	// 3. Fetch Bonds
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	tBond := time.Now()
 	bondBalances, err := client.GetShareBalances(goksei.BondType)
 	if err != nil {
-		log.Printf("[Syncer] Bond balances error for %s: %v", acc.Username, err)
+		slog.Error("Bond balances error", "account", acc.Name, "username", acc.Username, "err", err)
 		fetchErrors = append(fetchErrors, fmt.Sprintf("bonds: %v", err))
-	} else if bondBalances != nil && bondBalances.Data != nil {
-		for _, item := range bondBalances.Data {
-			val := item.CurrentValue()
-			holdings = append(holdings, model.Holding{
-				AccountID:    acc.ID,
-				CapturedAt:   capturedAt,
-				CapturedDate: capturedDate,
-				AssetType:    "BOND",
-				SecurityCode: item.Symbol(),
-				SecurityName: item.FullName,
-				Participant:  item.Participant,
-				Currency:     item.Currency,
-				Quantity:     item.Amount,
-				Price:        item.ClosingPrice,
-				TotalValue:   val,
-			})
+	} else {
+		bondCount := 0
+		if bondBalances != nil && bondBalances.Data != nil {
+			bondCount = len(bondBalances.Data)
+			for _, item := range bondBalances.Data {
+				val := item.CurrentValue()
+				holdings = append(holdings, model.Holding{
+					AccountID:    acc.ID,
+					CapturedAt:   capturedAt,
+					CapturedDate: capturedDate,
+					AssetType:    "BOND",
+					SecurityCode: item.Symbol(),
+					SecurityName: item.FullName,
+					Participant:  item.Participant,
+					Currency:     item.Currency,
+					Quantity:     item.Amount,
+					Price:        item.ClosingPrice,
+					TotalValue:   val,
+				})
+			}
 		}
+		slog.Info("Fetched bonds", "account", acc.Name, "count", bondCount, "duration", time.Since(tBond).String())
 	}
 
 	// 4. Fetch Cash balances (RDN)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	tCash := time.Now()
 	cashResp, err := client.GetCashBalances()
 	if err != nil {
-		log.Printf("[Syncer] Cash balances error for %s: %v", acc.Username, err)
+		slog.Error("Cash balances error", "account", acc.Name, "username", acc.Username, "err", err)
 		fetchErrors = append(fetchErrors, fmt.Sprintf("cash balances: %v", err))
-	} else if cashResp != nil && cashResp.Data != nil {
-		for _, item := range cashResp.Data {
-			val := item.CurrentBalance()
-			bankName, ok := goksei.CustodianBankNameByID(item.BankID)
-			if !ok {
-				bankName = item.BankID
+	} else {
+		cashCount := 0
+		if cashResp != nil && cashResp.Data != nil {
+			cashCount = len(cashResp.Data)
+			for _, item := range cashResp.Data {
+				val := item.CurrentBalance()
+				bankName, ok := goksei.CustodianBankNameByID(item.BankID)
+				if !ok {
+					bankName = item.BankID
+				}
+				holdings = append(holdings, model.Holding{
+					AccountID:    acc.ID,
+					CapturedAt:   capturedAt,
+					CapturedDate: capturedDate,
+					AssetType:    "CASH",
+					SecurityCode: fmt.Sprintf("RDN-%s-%s", item.BankID, item.AccountNumber),
+					SecurityName: fmt.Sprintf("Cash RDN (%s)", bankName),
+					Participant:  bankName,
+					Currency:     item.Currency,
+					Quantity:     val,
+					Price:        1,
+					TotalValue:   val,
+				})
 			}
-			holdings = append(holdings, model.Holding{
-				AccountID:    acc.ID,
-				CapturedAt:   capturedAt,
-				CapturedDate: capturedDate,
-				AssetType:    "CASH",
-				SecurityCode: fmt.Sprintf("RDN-%s-%s", item.BankID, item.AccountNumber),
-				SecurityName: fmt.Sprintf("Cash RDN (%s)", bankName),
-				Participant:  bankName,
-				Currency:     item.Currency,
-				Quantity:     val,
-				Price:        1,
-				TotalValue:   val,
-			})
 		}
+		slog.Info("Fetched cash balances", "account", acc.Name, "count", cashCount, "duration", time.Since(tCash).String())
 	}
 
 	// If any balance calls failed, do not wipe/corrupt holdings with partial data
@@ -368,5 +405,6 @@ func (s *Syncer) syncAccount(ctx context.Context, key []byte, acc model.Account,
 		return fmt.Errorf("persist holdings: %w", err)
 	}
 
+	slog.Info("Account holdings saved", "account", acc.Name, "total_records", len(holdings))
 	return nil
 }

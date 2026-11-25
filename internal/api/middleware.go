@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,7 @@ type Middleware struct {
 	rateMu         sync.Mutex
 	lastRateEvict  time.Time
 	allowedOrigins []string
+	logAccess      bool
 }
 
 type rateBucket struct {
@@ -31,21 +33,55 @@ type rateBucket struct {
 }
 
 func NewMiddleware(v *vault.Vault, allowedOrigins []string) *Middleware {
+	return NewMiddlewareWithConfig(v, allowedOrigins, false)
+}
+
+func NewMiddlewareWithConfig(v *vault.Vault, allowedOrigins []string, logAccess bool) *Middleware {
 	return &Middleware{
 		vault:          v,
 		tokens:         make(map[string]time.Time),
 		rateLimit:      make(map[string]*rateBucket),
 		allowedOrigins: allowedOrigins,
+		logAccess:      logAccess,
 	}
 }
 
-// LoggingMiddleware logs every HTTP request with status, duration, and client IP.
+// Recover catches any panics in downstream handlers, logs stack trace, and returns 500.
+func (m *Middleware) Recover(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("HTTP panic recovered",
+					"err", fmt.Sprintf("%v", rec),
+					"path", r.URL.Path,
+					"method", r.Method,
+					"stack", string(debug.Stack()),
+				)
+
+				if strings.HasPrefix(r.URL.Path, "/api/") {
+					WriteError(w, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "An unexpected error occurred")
+				} else {
+					http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+				}
+			}
+		}()
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// LoggingMiddleware logs HTTP requests when logAccess is enabled or on error status.
 func (m *Middleware) Logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
 
 		next.ServeHTTP(rw, r)
+
+		// If access logs disabled, only log errors (>= 400)
+		if !m.logAccess && rw.status < 400 {
+			return
+		}
 
 		duration := time.Since(start)
 		slog.Info("HTTP request",

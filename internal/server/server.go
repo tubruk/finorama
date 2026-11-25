@@ -34,6 +34,10 @@ type Server struct {
 }
 
 func NewWithTemplateFS(st *store.Store, v *vault.Vault, sync *syncer.Syncer, templatesFS fs.FS) (*Server, error) {
+	return NewWithConfig(st, v, sync, templatesFS, false)
+}
+
+func NewWithConfig(st *store.Store, v *vault.Vault, sync *syncer.Syncer, templatesFS fs.FS, logAccess bool) (*Server, error) {
 	printer := message.NewPrinter(language.Indonesian)
 	funcMap := template.FuncMap{
 		"formatIDR": func(v float64) string {
@@ -67,7 +71,7 @@ func NewWithTemplateFS(st *store.Store, v *vault.Vault, sync *syncer.Syncer, tem
 		"http://localhost:3000",
 		"http://127.0.0.1:3000",
 	}
-	apiMW := api.NewMiddleware(v, allowedOrigins)
+	apiMW := api.NewMiddlewareWithConfig(v, allowedOrigins, logAccess)
 	apiServer := api.New(st, v, sync, apiMW)
 
 	return &Server{
@@ -128,7 +132,8 @@ func (s *Server) Routes() http.Handler {
 		s.handleSync(w, r)
 	})
 
-	return mux
+	// Wrap entire server handler chain with Recover and Logging
+	return s.apiMW.Recover(s.apiMW.Logging(mux))
 }
 
 func (s *Server) hasActiveSession(r *http.Request) bool {

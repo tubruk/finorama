@@ -6,7 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -16,6 +16,7 @@ import (
 	"time"
 
 	cliHandler "github.com/chickenzord/finorama/internal/cli"
+	"github.com/chickenzord/finorama/internal/logx"
 	"github.com/chickenzord/finorama/internal/server"
 	"github.com/chickenzord/finorama/internal/store"
 	"github.com/chickenzord/finorama/internal/syncer"
@@ -41,13 +42,17 @@ Flags:
   -host string        Host/IP to bind HTTP server (default "127.0.0.1")
   -data-dir string    Directory for SQLite DB and cache (default "./data")
   -port int           HTTP port for web server (default 8080)
+  -log-access         Enable verbose HTTP access logging (default false)
 `)
 }
 
 func main() {
+	logx.InitLogger()
+
 	var host string
 	var dataDir string
 	var port int
+	var logAccess bool
 
 	args := os.Args[1:]
 	var cmd string
@@ -65,6 +70,7 @@ func main() {
 	flags.StringVar(&host, "host", "127.0.0.1", "Host address to bind HTTP server")
 	flags.StringVar(&dataDir, "data-dir", "./data", "Directory to store sqlite DB and sessions")
 	flags.IntVar(&port, "port", 8080, "HTTP server port")
+	flags.BoolVar(&logAccess, "log-access", false, "Enable verbose HTTP access logging")
 
 	switch cmd {
 	case "help", "-h", "--help":
@@ -115,7 +121,7 @@ func main() {
 
 	case "serve":
 		_ = flags.Parse(subArgs)
-		runServer(host, dataDir, port)
+		runServer(host, dataDir, port, logAccess)
 
 	default:
 		printUsage()
@@ -129,12 +135,14 @@ func isFlag(arg string) bool {
 
 func runCLI(dataDir string, fn func(*cliHandler.CLI) error) {
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
-		log.Fatalf("Failed to create data directory: %v", err)
+		slog.Error("Failed to create data directory", "err", err)
+		os.Exit(1)
 	}
 
 	st, err := store.Open(filepath.Join(dataDir, "finorama.db"))
 	if err != nil {
-		log.Fatalf("Failed to open database: %v", err)
+		slog.Error("Failed to open database", "err", err)
+		os.Exit(1)
 	}
 	defer st.Close()
 
@@ -143,19 +151,22 @@ func runCLI(dataDir string, fn func(*cliHandler.CLI) error) {
 	cli := cliHandler.New(st, v, syncWorker, dataDir)
 
 	if err := fn(cli); err != nil {
-		log.Fatalf("Error: %v", err)
+		slog.Error("Execution failed", "err", err)
+		os.Exit(1)
 	}
 }
 
-func runServer(host string, dataDir string, port int) {
+func runServer(host string, dataDir string, port int, logAccess bool) {
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
-		log.Fatalf("Failed to create data directory: %v", err)
+		slog.Error("Failed to create data directory", "err", err)
+		os.Exit(1)
 	}
 
 	dbPath := filepath.Join(dataDir, "finorama.db")
 	st, err := store.Open(dbPath)
 	if err != nil {
-		log.Fatalf("Failed to open database: %v", err)
+		slog.Error("Failed to open database", "err", err)
+		os.Exit(1)
 	}
 	defer st.Close()
 
@@ -164,9 +175,10 @@ func runServer(host string, dataDir string, port int) {
 	syncWorker.StartCron()
 	defer syncWorker.Stop()
 
-	srv, err := server.NewWithTemplateFS(st, v, syncWorker, templatesFS)
+	srv, err := server.NewWithConfig(st, v, syncWorker, templatesFS, logAccess)
 	if err != nil {
-		log.Fatalf("Failed to init server: %v", err)
+		slog.Error("Failed to init server", "err", err)
+		os.Exit(1)
 	}
 
 	addr := fmt.Sprintf("%s:%d", host, port)
@@ -183,19 +195,20 @@ func runServer(host string, dataDir string, port int) {
 	defer stop()
 
 	go func() {
-		log.Printf("Starting Finorama on http://%s (data: %s)", addr, dataDir)
+		slog.Info("Starting Finorama server", "url", fmt.Sprintf("http://%s", addr), "data_dir", dataDir)
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("Server error: %v", err)
+			slog.Error("Server error", "err", err)
+			os.Exit(1)
 		}
 	}()
 
 	<-ctx.Done()
-	log.Println("Shutting down Finorama server gracefully...")
+	slog.Info("Shutting down Finorama server gracefully...")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		log.Printf("HTTP server shutdown error: %v", err)
+		slog.Error("HTTP server shutdown error", "err", err)
 	}
 }

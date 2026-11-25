@@ -56,7 +56,7 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("POST /sync", authGuard(http.HandlerFunc(a.handleSyncTrigger)))
 	mux.Handle("GET /sync/status", authGuard(http.HandlerFunc(a.handleSyncStatus)))
 
-	return a.middleware.CORS(a.middleware.Logging(mux))
+	return a.middleware.Recover(a.middleware.CORS(a.middleware.Logging(mux)))
 }
 
 // GET /vault/status
