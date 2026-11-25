@@ -1,0 +1,237 @@
+{{define "title"}}Dashboard — Finorama{{end}}
+
+{{define "content"}}
+<div class="space-y-8">
+    <!-- Top Action Bar -->
+    <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-2 border-b border-slate-800">
+        <div>
+            <h1 class="text-2xl font-bold tracking-tight text-white">Portfolio Overview</h1>
+            <p class="text-sm text-slate-400">Aggregated snapshot across all connected KSEI accounts</p>
+        </div>
+        <div class="flex items-center gap-3">
+            <button hx-post="/sync" hx-target="#sync-status" hx-indicator="#sync-spinner"
+                class="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/20 transition">
+                <svg id="sync-spinner" class="htmx-indicator animate-spin -ml-0.5 mr-1 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+                </svg>
+                <span>Trigger Sync Now</span>
+            </button>
+            <a href="/accounts" class="px-3.5 py-2 rounded-xl text-sm font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition">
+                Manage Accounts
+            </a>
+        </div>
+    </div>
+
+    <!-- Sync status notification container -->
+    <div id="sync-status"></div>
+
+    <!-- Metric Cards Grid -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+        <!-- Total -->
+        <div class="bg-gradient-to-br from-indigo-950/60 to-slate-900 border border-indigo-500/30 rounded-2xl p-5 shadow-lg relative overflow-hidden sm:col-span-2 lg:col-span-1">
+            <div class="text-xs font-semibold uppercase tracking-wider text-indigo-300">Total Portfolio</div>
+            <div class="text-2xl font-bold text-white mt-2">{{formatIDR .Overview.TotalValue}}</div>
+            <div class="text-xs text-slate-400 mt-1">{{len .Overview.Accounts}} Active Account(s)</div>
+        </div>
+
+        <!-- Equities -->
+        <div class="bg-slate-900/80 border border-slate-800 rounded-2xl p-5">
+            <div class="flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-slate-400">
+                <span>Saham (Equity)</span>
+                <span class="w-2.5 h-2.5 rounded-full bg-emerald-400"></span>
+            </div>
+            <div class="text-xl font-bold text-white mt-2">{{formatIDR .Overview.TotalEquity}}</div>
+        </div>
+
+        <!-- Mutual Funds -->
+        <div class="bg-slate-900/80 border border-slate-800 rounded-2xl p-5">
+            <div class="flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-slate-400">
+                <span>Reksadana</span>
+                <span class="w-2.5 h-2.5 rounded-full bg-sky-400"></span>
+            </div>
+            <div class="text-xl font-bold text-white mt-2">{{formatIDR .Overview.TotalMutualFund}}</div>
+        </div>
+
+        <!-- Bonds -->
+        <div class="bg-slate-900/80 border border-slate-800 rounded-2xl p-5">
+            <div class="flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-slate-400">
+                <span>Obligasi / SBN</span>
+                <span class="w-2.5 h-2.5 rounded-full bg-amber-400"></span>
+            </div>
+            <div class="text-xl font-bold text-white mt-2">{{formatIDR .Overview.TotalBond}}</div>
+        </div>
+
+        <!-- Cash -->
+        <div class="bg-slate-900/80 border border-slate-800 rounded-2xl p-5">
+            <div class="flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-slate-400">
+                <span>Cash RDN</span>
+                <span class="w-2.5 h-2.5 rounded-full bg-purple-400"></span>
+            </div>
+            <div class="text-xl font-bold text-white mt-2">{{formatIDR .Overview.TotalCash}}</div>
+        </div>
+    </div>
+
+    <!-- Chart Section -->
+    <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl">
+        <h2 class="text-lg font-bold text-white mb-4">Historical Valuation (Daily)</h2>
+        <div class="w-full h-64">
+            <canvas id="historyChart"></canvas>
+        </div>
+    </div>
+
+    <!-- Connected Accounts Summary -->
+    <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
+        <h2 class="text-lg font-bold text-white">Accounts Breakdown</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {{range .Overview.Accounts}}
+            <div class="p-4 rounded-xl bg-slate-950/60 border border-slate-800/80 flex flex-col justify-between">
+                <div>
+                    <div class="flex items-center justify-between">
+                        <span class="font-semibold text-white">{{.AccountName}}</span>
+                        <span class="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-300">{{.Username}}</span>
+                    </div>
+                    <div class="text-lg font-bold text-indigo-400 mt-2">{{formatIDR .TotalValue}}</div>
+                </div>
+                <div class="mt-4 pt-3 border-t border-slate-800/60 flex items-center justify-between text-xs text-slate-400">
+                    <span>Last synced: {{if .LastSyncedAt}}{{.LastSyncedAt.Format "02 Jan 15:04"}}{{else}}Never{{end}}</span>
+                    <button hx-post="/sync?account_id={{.AccountID}}" hx-target="#sync-status" class="text-indigo-400 hover:text-indigo-300 font-medium">Sync</button>
+                </div>
+            </div>
+            {{else}}
+            <div class="col-span-full py-8 text-center text-slate-400">
+                No accounts added yet. <a href="/accounts" class="text-indigo-400 hover:underline">Add your first KSEI account</a>.
+            </div>
+            {{end}}
+        </div>
+    </div>
+
+    <!-- Holdings Table -->
+    <div class="bg-slate-900/90 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+        <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
+            <h2 class="text-lg font-bold text-white">Current Holdings ({{len .Overview.Holdings}})</h2>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-sm">
+                <thead class="bg-slate-950/60 text-xs font-semibold uppercase tracking-wider text-slate-400 border-b border-slate-800">
+                    <tr>
+                        <th class="px-6 py-3.5">Asset</th>
+                        <th class="px-6 py-3.5">Type</th>
+                        <th class="px-6 py-3.5">Account / Custodian</th>
+                        <th class="px-6 py-3.5 text-right">Quantity</th>
+                        <th class="px-6 py-3.5 text-right">Price</th>
+                        <th class="px-6 py-3.5 text-right">Total Value (IDR)</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-800/60">
+                    {{range .Overview.Holdings}}
+                    <tr class="hover:bg-slate-800/30 transition">
+                        <td class="px-6 py-4">
+                            <div class="font-bold text-white">{{.SecurityCode}}</div>
+                            <div class="text-xs text-slate-400 truncate max-w-xs">{{.SecurityName}}</div>
+                        </td>
+                        <td class="px-6 py-4">
+                            <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-md
+                                {{if eq .AssetType "EQUITY"}}bg-emerald-950/70 text-emerald-300 border border-emerald-800/50
+                                {{else if eq .AssetType "MUTUAL_FUND"}}bg-sky-950/70 text-sky-300 border border-sky-800/50
+                                {{else if eq .AssetType "BOND"}}bg-amber-950/70 text-amber-300 border border-amber-800/50
+                                {{else}}bg-purple-950/70 text-purple-300 border border-purple-800/50{{end}}">
+                                {{.AssetType}}
+                            </span>
+                        </td>
+                        <td class="px-6 py-4 text-xs text-slate-300">
+                            <div>{{.AccountName}}</div>
+                            <div class="text-slate-500">{{.Participant}}</div>
+                        </td>
+                        <td class="px-6 py-4 text-right font-mono text-slate-200">{{formatNumber .Quantity}}</td>
+                        <td class="px-6 py-4 text-right font-mono text-slate-400">{{formatNumber .Price}}</td>
+                        <td class="px-6 py-4 text-right font-mono font-bold text-white">{{formatIDR .TotalValue}}</td>
+                    </tr>
+                    {{else}}
+                    <tr>
+                        <td colspan="6" class="px-6 py-8 text-center text-slate-400">
+                            No holdings captured yet. Trigger a sync after adding your accounts.
+                        </td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+    const histData = {{.HistoricalJSON}};
+    if (histData && histData.length > 0) {
+        // Point objects with true date timestamps on X axis
+        const points = histData.map(d => ({
+            x: d.date,
+            y: d.total_value
+        }));
+
+        const ctx = document.getElementById('historyChart').getContext('2d');
+        new Chart(ctx, {
+            type: 'line',
+            data: {
+                datasets: [{
+                    label: 'Portfolio Value (IDR)',
+                    data: points,
+                    borderColor: '#6366f1',
+                    backgroundColor: 'rgba(99, 102, 241, 0.1)',
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.15,
+                    pointBackgroundColor: '#818cf8',
+                    pointRadius: 3,
+                    spanGaps: true
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: function(ctx) {
+                                return 'IDR ' + new Intl.NumberFormat('id-ID').format(ctx.parsed.y);
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        type: 'time',
+                        time: {
+                            unit: 'day',
+                            displayFormats: {
+                                day: 'd MMM'
+                            },
+                            tooltipFormat: 'dd MMM yyyy'
+                        },
+                        grid: { color: 'rgba(51, 65, 85, 0.4)' },
+                        ticks: {
+                            color: '#94a3b8',
+                            font: { size: 11 },
+                            autoSkip: true,
+                            maxRotation: 0
+                        }
+                    },
+                    y: {
+                        grid: { color: 'rgba(51, 65, 85, 0.4)' },
+                        ticks: {
+                            color: '#94a3b8',
+                            font: { size: 11 },
+                            callback: function(v) {
+                                if (v >= 1e9) return (v / 1e9).toFixed(1) + 'B';
+                                if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+                                return v;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+</script>
+{{end}}

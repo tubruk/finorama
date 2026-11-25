@@ -1,0 +1,21 @@
+# Binaries
+finorama
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Data and SQLite files
+data/
+*.db
+*.db-wal
+*.db-shm
+.goksei-auth/
+ksei_sessions/
+
+# OS / Editor
+.DS_Store
+.idea/
+.vscode/
+skills-lock.json

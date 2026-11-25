@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-slate-950 text-slate-100">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{block "title" .}}Finorama — Portfolio Overview{{end}}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <style>
+        .htmx-indicator { display: none; }
+        .htmx-request .htmx-indicator { display: inline-block; }
+        .htmx-request.htmx-indicator { display: inline-block; }
+    </style>
+</head>
+<body class="h-full flex flex-col font-sans antialiased selection:bg-indigo-500 selection:text-white">
+    <!-- Navbar -->
+    <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-40">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-500 to-emerald-400 flex items-center justify-center font-bold text-white shadow-lg shadow-indigo-500/20">
+                    F
+                </div>
+                <div>
+                    <a href="/" class="text-xl font-bold tracking-tight text-white hover:text-indigo-300 transition">Finorama</a>
+                    <span class="text-xs text-slate-400 ml-2 hidden sm:inline">KSEI Portfolio</span>
+                </div>
+            </div>
+
+            <div class="flex items-center space-x-3">
+                {{if .IsUnlocked}}
+                <a href="/" class="px-3 py-1.5 text-sm font-medium text-slate-300 hover:text-white rounded-lg hover:bg-slate-800 transition">Dashboard</a>
+                <a href="/accounts" class="px-3 py-1.5 text-sm font-medium text-slate-300 hover:text-white rounded-lg hover:bg-slate-800 transition">Accounts</a>
+                <form action="/lock" method="POST" class="inline">
+                    <button type="submit" class="px-3 py-1.5 text-sm font-medium text-rose-300 hover:text-rose-200 bg-rose-950/40 hover:bg-rose-900/50 border border-rose-800/50 rounded-lg transition">Lock Vault</button>
+                </form>
+                {{end}}
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {{block "content" .}}{{end}}
+    </main>
+
+    <!-- Footer -->
+    <footer class="border-t border-slate-800/80 py-6 text-center text-xs text-slate-500">
+        Finorama &middot; Self-hosted KSEI Portfolio Monitor &middot; Local Encrypted SQLite
+    </footer>
+</body>
+</html>
