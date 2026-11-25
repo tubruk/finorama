@@ -42,7 +42,7 @@ RUN CGO_ENABLED=0 go build \
     .
 
 # Stage 3: Runner
-FROM alpine:3.21 AS runner
+FROM alpine:3.24 AS runner
 RUN apk add --no-cache ca-certificates tzdata curl
 
 WORKDIR /app
