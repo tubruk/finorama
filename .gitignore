@@ -15,7 +15,8 @@ data/
 ksei_sessions/
 
 # Web / Frontend builds
-web/dist/
+web/dist/*
+!web/dist/.gitkeep
 web/node_modules/
 .bun/
 *.local
@@ -25,3 +26,4 @@ web/node_modules/
 .idea/
 .vscode/
 skills-lock.json
+*.out

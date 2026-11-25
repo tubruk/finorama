@@ -373,7 +373,7 @@ func (s *Syncer) syncAccount(ctx context.Context, key []byte, acc model.Account,
 			cashCount = len(cashResp.Data)
 			for _, item := range cashResp.Data {
 				val := item.CurrentBalance()
-				bankName, ok := goksei.CustodianBankNameByID(item.BankID)
+				bankName, ok := goksei.CustodianBankNameByCode(item.BankID)
 				if !ok {
 					bankName = item.BankID
 				}

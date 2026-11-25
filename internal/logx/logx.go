@@ -15,12 +15,10 @@ import (
 func InitLogger() {
 	isTTY := isatty.IsTerminal(os.Stderr.Fd()) || isatty.IsCygwinTerminal(os.Stderr.Fd())
 
-	w := os.Stderr
-	logger := slog.New(tint.NewHandler(w, &tint.Options{
+	handler := tint.NewHandler(os.Stderr, &tint.Options{
 		Level:      slog.LevelInfo,
 		TimeFormat: time.TimeOnly,
 		NoColor:    !isTTY,
-	}))
-
-	slog.SetDefault(logger)
+	})
+	slog.SetDefault(slog.New(handler))
 }
