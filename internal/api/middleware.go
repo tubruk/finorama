@@ -99,8 +99,18 @@ func (m *Middleware) RateLimit(capacity float64, refillPerSec float64) func(http
 			}
 
 			m.rateMu.Lock()
-			bucket, exists := m.rateLimit[ip]
 			now := time.Now()
+
+			// Evict stale buckets to prevent unbounded memory growth
+			if len(m.rateLimit) > 1000 {
+				for k, b := range m.rateLimit {
+					if now.Sub(b.lastCheck) > 10*time.Minute {
+						delete(m.rateLimit, k)
+					}
+				}
+			}
+
+			bucket, exists := m.rateLimit[ip]
 			if !exists {
 				bucket = &rateBucket{tokens: capacity, lastCheck: now}
 				m.rateLimit[ip] = bucket

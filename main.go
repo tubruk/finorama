@@ -33,12 +33,14 @@ Commands:
   sync [acc_id]       Manually trigger sync for an account or all accounts
 
 Flags:
+  -host string        Host/IP to bind HTTP server (default "127.0.0.1")
   -data-dir string    Directory for SQLite DB and cache (default "./data")
   -port int           HTTP port for web server (default 8080)
 `)
 }
 
 func main() {
+	var host string
 	var dataDir string
 	var port int
 
@@ -55,6 +57,7 @@ func main() {
 	}
 
 	flags := flag.NewFlagSet("finorama", flag.ExitOnError)
+	flags.StringVar(&host, "host", "127.0.0.1", "Host address to bind HTTP server")
 	flags.StringVar(&dataDir, "data-dir", "./data", "Directory to store sqlite DB and sessions")
 	flags.IntVar(&port, "port", 8080, "HTTP server port")
 
@@ -107,7 +110,7 @@ func main() {
 
 	case "serve":
 		_ = flags.Parse(subArgs)
-		runServer(dataDir, port)
+		runServer(host, dataDir, port)
 
 	default:
 		printUsage()
@@ -139,7 +142,7 @@ func runCLI(dataDir string, fn func(*cliHandler.CLI) error) {
 	}
 }
 
-func runServer(dataDir string, port int) {
+func runServer(host string, dataDir string, port int) {
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
 		log.Fatalf("Failed to create data directory: %v", err)
 	}
@@ -161,8 +164,8 @@ func runServer(dataDir string, port int) {
 		log.Fatalf("Failed to init server: %v", err)
 	}
 
-	addr := fmt.Sprintf(":%d", port)
-	log.Printf("Starting Finorama on http://localhost%s (data: %s)", addr, dataDir)
+	addr := fmt.Sprintf("%s:%d", host, port)
+	log.Printf("Starting Finorama on http://%s (data: %s)", addr, dataDir)
 	if err := http.ListenAndServe(addr, srv.Routes()); err != nil {
 		log.Fatalf("Server stopped: %v", err)
 	}

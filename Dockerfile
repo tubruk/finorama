@@ -60,4 +60,4 @@ EXPOSE 8080
 # Health check verifies API responsiveness
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD curl -f http://localhost:${FINORAMA_PORT}/api/v1/vault/status || exit 1
 
-ENTRYPOINT ["/usr/local/bin/finorama", "serve", "-data-dir", "/data", "-port", "8080"]
+ENTRYPOINT ["/usr/local/bin/finorama", "serve", "-host", "0.0.0.0", "-data-dir", "/data", "-port", "8080"]

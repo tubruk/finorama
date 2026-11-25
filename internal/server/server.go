@@ -237,6 +237,10 @@ func (s *Server) handleInit(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLock(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	s.vault.Lock()
 	s.syncer.ClearSessionCache()
 	log.Printf("[Server] Vault locked by user and session cache cleared")
@@ -246,6 +250,7 @@ func (s *Server) handleLock(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
 	})
 	http.Redirect(w, r, "/unlock", http.StatusSeeOther)
 }
@@ -321,6 +326,11 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAccountDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	if !s.hasActiveSession(r) {
 		http.Redirect(w, r, "/unlock", http.StatusSeeOther)
 		return
@@ -339,6 +349,11 @@ func (s *Server) handleAccountDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	if !s.hasActiveSession(r) {
 		http.Error(w, "Vault locked", http.StatusUnauthorized)
 		return

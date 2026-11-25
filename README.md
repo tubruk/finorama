@@ -36,7 +36,7 @@ make build
 ```
 
 - **Multi-Account Support**: Manage multiple AKSES KSEI accounts in one unified dashboard.
-- **Master Passphrase Vault**: Zero credentials stored in plaintext. Passwords encrypted in local SQLite using AES-256-GCM derived via Argon2id. Passphrase kept in-memory only while unlocked.
+- **Master Passphrase Vault**: Zero credentials stored in plaintext. Passwords encrypted in local SQLite using AES-256-GCM derived via Argon2id. Passphrase kept in-memory only while unlocked. Note that the vault operates as a single-tenant process-level shared state: unlocking enables both user sessions and background sync workers; locking purges the key in RAM across all sessions.
 - **Pure Go SQLite**: Single-binary deployment with modernc pure Go SQLite engine and WAL mode enabled.
 - **Automated Daily Capture**: Scheduled background syncer (default: 01:00 AM after KSEI midnight data updates) + manual trigger button via HTMX.
 - **Snapshot & Breakdown**: Aggregated portfolio totals, asset allocation (Equity, Mutual Funds, Bonds, RDN Cash), and historical valuation timeline.
